@@ -17,82 +17,74 @@ NC='\033[0m'
 echo -e "${GREEN}Установка среды программирования Кумир${NC}"
 echo "=========================================="
 
-# Проверка зависимостей
-echo -e "${YELLOW}Проверка системных утилит...${NC}"
-for cmd in curl tar; do
-    command -v "$cmd" &>/dev/null || { 
-        echo "Установка недостающих утилит..."
-        sudo apt update -qq && sudo apt install -y curl tar
-        break
-    }
-done
-
-# === НАСТРОЙКА РЕПОЗИТОРИЯ QT4 (без ошибок подписи) ===
-echo -e "${YELLOW}Настройка зависимостей Qt4...${NC}"
-
-# Удаляем старые некорректные файлы репозитория
-sudo rm -f /etc/apt/sources.list.d/rock-core-qt4.list /etc/apt/sources.list.d/rock-core-qt4.list.save
-
-# Добавляем репозиторий БЕЗ лишних пробелов
-if ! grep -q "rock-core/qt4" /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/null; then
-    echo "deb https://ppa.launchpadcontent.net/rock-core/qt4/ubuntu focal main" | \
-        sudo tee /etc/apt/sources.list.d/rock-core-qt4.list > /dev/null
+# Проверка архитектуры (только amd64/x86_64 поддерживается)
+if [ "$(uname -m)" != "x86_64" ]; then
+    echo -e "${RED}Ошибка: Поддерживается только архитектура x86_64 (64-bit)${NC}"
+    exit 1
 fi
 
-# Импортируем ключ (игнорируем ошибки — пакеты безопасны для Кумир)
-echo "Установка библиотек Qt4 (игнорирование ошибок подписи)..."
-sudo apt update 2>&1 | grep -v "NO_PUBKEY\|NO_PUBKEY" || true
+# === УСТАНОВКА ЗАВИСИМОСТЕЙ QT4 ЧЕРЕЗ .DEB ПАКЕТЫ ===
+echo -e "${YELLOW}Установка библиотек Qt4 из пакетов Ubuntu Focal...${NC}"
 
-sudo apt install -y --allow-unauthenticated \
-    libqtcore4 libqtgui4 libqt4-svg libqt4-xml libqt4-script libqt4-network libxss1 \
-    2>&1 | grep -v "NO_PUBKEY\|WARNING:" || true
+QT4_DEBS=(
+    "http://archive.ubuntu.com/ubuntu/pool/main/q/qt4-x11/libqtcore4_4.8.7+dfsg-18ubuntu2_amd64.deb"
+    "http://archive.ubuntu.com/ubuntu/pool/main/q/qt4-x11/libqtgui4_4.8.7+dfsg-18ubuntu2_amd64.deb"
+    "http://archive.ubuntu.com/ubuntu/pool/main/q/qt4-x11/libqt4-svg_4.8.7+dfsg-18ubuntu2_amd64.deb"
+    "http://archive.ubuntu.com/ubuntu/pool/main/q/qt4-x11/libqt4-xml_4.8.7+dfsg-18ubuntu2_amd64.deb"
+    "http://archive.ubuntu.com/ubuntu/pool/main/q/qt4-x11/libqt4-script_4.8.7+dfsg-18ubuntu2_amd64.deb"
+    "http://archive.ubuntu.com/ubuntu/pool/main/q/qt4-x11/libqt4-network_4.8.7+dfsg-18ubuntu2_amd64.deb"
+    "http://archive.ubuntu.com/ubuntu/pool/main/q/qt4-x11/libqt4-dbus_4.8.7+dfsg-18ubuntu2_amd64.deb"
+    "http://archive.ubuntu.com/ubuntu/pool/main/libx/libxss/libxss1_1.2.3-1_amd64.deb"
+    "http://archive.ubuntu.com/ubuntu/pool/main/libp/libpng/libpng16-16_1.6.37-3build1_amd64.deb"
+    "http://archive.ubuntu.com/ubuntu/pool/main/libj/libjpeg-turbo/libjpeg-turbo8_2.1.1-0ubuntu2_amd64.deb"
+)
 
+TEMP_DEB_DIR=$(mktemp -d)
+cd "$TEMP_DEB_DIR"
+
+echo "Скачивание пакетов..."
+for url in "${QT4_DEBS[@]}"; do
+    curl -sLO "$url" || { echo "Не удалось скачать $url"; exit 1; }
+done
+
+echo "Установка пакетов..."
+sudo dpkg -i *.deb 2>&1 | grep -v "warning: symbol" || true
+sudo apt-get install -f -y 2>&1 | grep -v "warning" || true
+
+cd - > /dev/null
+rm -rf "$TEMP_DEB_DIR"
 sudo ldconfig
 
-# === СКАЧИВАНИЕ И РАСПАКОВКА ===
+echo -e "${GREEN}✓ Библиотеки Qt4 установлены${NC}"
+
+# === СКАЧИВАНИЕ И УСТАНОВКА КУМИР ===
 echo -e "${YELLOW}Скачивание Кумир...${NC}"
 rm -f "$FILENAME"
 curl -L -# -o "$FILENAME" "$DOWNLOAD_URL"
 
 echo -e "${YELLOW}Распаковка архива...${NC}"
-# Создаём временную директорию для распаковки
 TEMP_DIR=$(mktemp -d)
 tar -xzf "$FILENAME" -C "$TEMP_DIR"
 
 # Определяем структуру распаковки
 if [ -d "$TEMP_DIR/$DIR_NAME" ]; then
-    # Стандартная структура: архив содержит папку Kumir2X-1462
     EXTRACTED_DIR="$TEMP_DIR/$DIR_NAME"
-elif [ -f "$TEMP_DIR/bin/kumir2-classic" ]; then
-    # Плоская структура: файлы распакованы напрямую
-    EXTRACTED_DIR="$TEMP_DIR"
 else
-    # Ищем папку, начинающуюся с "Kumir"
-    EXTRACTED_DIR=$(find "$TEMP_DIR" -maxdepth 1 -type d -name "Kumir*" 2>/dev/null | head -n1)
-    if [ -z "$EXTRACTED_DIR" ]; then
-        echo -e "${RED}Ошибка: Не удалось определить структуру распакованного архива!${NC}"
-        echo "Содержимое архива:"
-        tar -tzf "$FILENAME" | head -20
-        rm -rf "$TEMP_DIR" "$FILENAME"
-        exit 1
-    fi
+    EXTRACTED_DIR="$TEMP_DIR"
 fi
 
-echo "Обнаружена структура: $(basename "$EXTRACTED_DIR")"
+echo "Структура: $(basename "$EXTRACTED_DIR")"
 
-# Удаляем старую установку и копируем файлы
 sudo rm -rf "$INSTALL_PATH"
 sudo mkdir -p "$INSTALL_PATH"
 sudo cp -r "$EXTRACTED_DIR"/* "$INSTALL_PATH"/
 
-# Очистка
 rm -f "$FILENAME"
 rm -rf "$TEMP_DIR"
 
 # Проверка исполняемого файла
 if [ ! -f "$INSTALL_PATH/$EXEC_FILE" ]; then
     echo -e "${RED}Ошибка: исполняемый файл не найден по пути $INSTALL_PATH/$EXEC_FILE${NC}"
-    echo "Доступные файлы в bin:"
     ls -la "$INSTALL_PATH/bin/" 2>/dev/null || echo "Папка bin не найдена"
     exit 1
 fi
@@ -100,12 +92,10 @@ fi
 # === СОЗДАНИЕ ЯРЛЫКА ===
 DESKTOP_FILE="$HOME/.local/share/applications/kumir.desktop"
 
-# Поиск иконки
 ICON_CANDIDATES=(
     "$INSTALL_PATH/share/icons/hicolor/256x256/apps/kumir2.png"
     "$INSTALL_PATH/share/pixmaps/kumir2.png"
     "$INSTALL_PATH/kumir2.png"
-    "$INSTALL_PATH/share/icons/hicolor/128x128/apps/kumir2.png"
 )
 ACTUAL_ICON="kumir2"
 for icon in "${ICON_CANDIDATES[@]}"; do
@@ -145,6 +135,6 @@ echo
 if [[ $REPLY =~ ^[Yy]$ || -z $REPLY ]]; then
     echo "Запуск Кумир..."
     nohup "$INSTALL_PATH/$EXEC_FILE" >/dev/null 2>&1 &
-    sleep 1
+    sleep 2
     echo "Готово! Если окно не появилось, запустите вручную: $INSTALL_PATH/$EXEC_FILE"
 fi
